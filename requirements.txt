@@ -3,3 +3,5 @@ google-generativeai
 python-dotenv
 youtube-transcript-api
 pathlib
+googletrans
+deep_translator

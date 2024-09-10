@@ -2,7 +2,9 @@ import streamlit as st
 from dotenv import load_dotenv
 import os
 import google.generativeai as genai
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+from deep_translator import GoogleTranslator, single_detection
+import time
 
 # Load environment variables
 load_dotenv()
@@ -19,17 +21,78 @@ prompt_qa = """You are a Q&A assistant. Based on the provided transcript text, a
 The transcript text is: {} 
 The question is: {}"""
 
-# Function to get transcript details from YouTube videos
+# Improved function to translate Hindi transcript to English using deep_translator
+def translate_if_hindi(text):
+    if not text:
+        st.error("No text available for translation.")
+        return ""
+
+    max_retries = 3  # Maximum retries for translation
+    
+    for attempt in range(max_retries):
+        try:
+            # Detect the language
+            detected_lang = single_detection(text[:100], api_key=os.getenv("GOOGLE_API_KEY"))
+            
+            if detected_lang == 'hi':
+                st.info("Detected Hindi transcript. Translating to English...")
+                translator = GoogleTranslator(source='hi', target='en')
+                # Split the text into smaller chunks to avoid length limits
+                chunk_size = 5000  # Adjust this value based on the library's limitations
+                chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+                translated_chunks = [translator.translate(chunk) for chunk in chunks]
+                return ' '.join(translated_chunks)
+            return text
+        except Exception as e:
+            st.error(f"Translation Error (attempt {attempt + 1}): {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait for 2 seconds before retrying
+            else:
+                st.warning("Max retries reached. Returning original text.")
+                return text
+    
+    return text
+
+# Improved function to get transcript details from YouTube videos
 def extract_transcript_details(youtube_video_url):
     try:
         video_id = youtube_video_url.split("v=")[-1]
-        transcript_text = YouTubeTranscriptApi.get_transcript(video_id)
+        transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # Try to get the English transcript, if not available, get Hindi
+        try:
+            transcript = transcripts.find_manually_created_transcript(['en'])
+            if transcript:
+                transcript_data = transcript.fetch()
+            else:
+                raise NoTranscriptFound("No English transcript found.")
+        except NoTranscriptFound:
+            try:
+                transcript = transcripts.find_generated_transcript(['hi'])
+                if transcript:
+                    transcript_data = transcript.fetch()
+                    st.info("Hindi transcript found; translating to English...")
+                else:
+                    raise NoTranscriptFound("No Hindi transcript found.")
+            except NoTranscriptFound:
+                st.error("No suitable transcript found for this video.")
+                return None
 
-        transcript = " ".join([entry["text"] for entry in transcript_text])
-        return transcript
+        # Check if the fetched transcript is correctly formatted
+        if isinstance(transcript_data, list) and all(isinstance(entry, dict) for entry in transcript_data):
+            transcript_text = " ".join([entry.get("text", "") for entry in transcript_data if entry.get("text")])
+            if transcript.language_code == 'hi':
+                transcript_text = translate_if_hindi(transcript_text)
+            return transcript_text
+        else:
+            st.error("Transcript format is not as expected.")
+            return None
 
+    except TranscriptsDisabled:
+        st.error("Transcripts are disabled for this video.")
+        return None
     except Exception as e:
-        st.error(f"Error extracting transcript: {e}")
+        st.error(f"Error fetching transcript: {e}")
         return None
 
 # Function to generate summary or answer based on prompt from Google Gemini
